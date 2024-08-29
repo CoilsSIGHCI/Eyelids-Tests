@@ -5,12 +5,17 @@ from bleak import BleakScanner, BleakClient
 
 class BluetoothConnector:
     def __init__(self):
-        self.client = None
+        self.client: BleakClient = None
         self.connected_device = None
+        self.eyelids_service_uuid = "D57D86F6-E6F3-4BE4-A3D1-A71119D27AD3"
+        self.animation_control_uuid = "4116f8d2-9f66-4f58-a53d-fc7440e7c14e"
 
     async def scan_for_devices(self):
-        devices = await BleakScanner.discover()
-        return devices
+        devices = await BleakScanner.discover(
+            return_adv=True,
+            service_uuids=[self.eyelids_service_uuid]
+        )
+        return [device for device, adv_data in devices.values()]
 
     async def connect_to_device(self, device):
         self.client = BleakClient(device.address)
@@ -28,29 +33,37 @@ class BluetoothConnector:
             self.client = None
             self.connected_device = None
 
-    async def get_services(self):
-        if not self.client:
-            return None
-        return await self.client.get_services()
-
-    async def read_characteristic(self, char_uuid):
+    async def write_characteristic(self, data):
         if not self.client:
             raise Exception("Not connected to any device")
-        return await self.client.read_gatt_char(char_uuid)
+        await self.client.write_gatt_char(self.animation_control_uuid, data)
 
-    async def write_characteristic(self, char_uuid, data):
+    async def eyelids_direction(self, direction):
         if not self.client:
-            raise Exception("Not connected to any device")
-        await self.client.write_gatt_char(char_uuid, data)
+            raise Exception("Not connected to Eyelids device")
+        pattern = self.get_eyelids_pattern(direction)
+        print(f"Writing pattern: {pattern}")
+        await self.write_characteristic(pattern.encode())
+
+    def get_eyelids_pattern(self, direction):
+        patterns = {
+            "Forward": "NAV_FORWARD",
+            "Backward": "NAV_BACKWARD",
+            "Left": "NAV_LEFT",
+            "Right": "NAV_RIGHT",
+            "Stop": "NAV_STOP"
+        }
+        return patterns.get(direction, "OFF")
 
 class BluetoothGUI:
-    def __init__(self, master):
+    def __init__(self, master, loop):
         self.master = master
+        self.loop = loop
         self.connector = BluetoothConnector()
-        master.title("Bluetooth Device Connector")
-        master.geometry("400x300")
+        master.title("Eyelids Device Connector")
+        master.geometry("400x350")
 
-        self.scan_button = ttk.Button(master, text="Scan for Devices", command=self.start_scan)
+        self.scan_button = ttk.Button(master, text="Scan for Eyelids Devices", command=self.start_scan)
         self.scan_button.pack(pady=10)
 
         self.device_listbox = tk.Listbox(master, width=50)
@@ -67,51 +80,44 @@ class BluetoothGUI:
     def start_scan(self):
         self.scan_button.config(state=tk.DISABLED)
         self.device_listbox.delete(0, tk.END)
-        self.status_label.config(text="Scanning...")
-        self.master.after(100, self.perform_scan)
-
-    def perform_scan(self):
-        asyncio.run(self._scan_for_devices())
+        self.status_label.config(text="Scanning for Eyelids devices...")
+        self.loop.create_task(self._scan_for_devices())
 
     async def _scan_for_devices(self):
         self.devices = await self.connector.scan_for_devices()
         for i, device in enumerate(self.devices):
-            self.device_listbox.insert(tk.END, f"{device.name or 'Unknown'} ({device.address})")
+            self.device_listbox.insert(tk.END, f"{device.name or 'Unknown Eyelids Device'} ({device.address})")
         self.scan_button.config(state=tk.NORMAL)
-        self.connect_button.config(state=tk.NORMAL)
-        self.status_label.config(text="Scan complete")
+        self.connect_button.config(state=tk.NORMAL if self.devices else tk.DISABLED)
+        self.status_label.config(text="Scan complete" if self.devices else "No Eyelids devices found")
 
     def connect_to_device(self):
         selection = self.device_listbox.curselection()
         if not selection:
-            messagebox.showwarning("No Selection", "Please select a device")
+            messagebox.showwarning("No Selection", "Please select an Eyelids device")
             return
         selected_index = selection[0]
         selected_device = self.devices[selected_index]
-        self.status_label.config(text=f"Connecting to {selected_device.name or 'Unknown'}...")
-        self.master.after(100, lambda: self.perform_connection(selected_device))
-
-    def perform_connection(self, device):
-        asyncio.run(self._connect_and_interact(device))
+        self.status_label.config(text=f"Connecting to {selected_device.name or 'Unknown Eyelids Device'}...")
+        self.loop.create_task(self._connect_and_interact(selected_device))
 
     async def _connect_and_interact(self, device):
         if await self.connector.connect_to_device(device):
-            self.status_label.config(text="Connected!")
-            services = await self.connector.get_services()
-            service_info = "Services:\n"
-            for service in services:
-                service_info += f"Service: {service.uuid}\n"
-                for char in service.characteristics:
-                    service_info += f"  Characteristic: {char.uuid}\n"
-                    service_info += f"    Properties: {', '.join(char.properties)}\n"
-            messagebox.showinfo("Device Information", service_info)
+            self.status_label.config(text="Connected to Eyelids device!")
         else:
-            self.status_label.config(text="Connection failed")
+            self.status_label.config(text="Connection to Eyelids device failed")
 
-def run_gui():
+def run_gui(loop):
     root = tk.Tk()
-    app = BluetoothGUI(root)
-    root.mainloop()
+    app = BluetoothGUI(root, loop)
+
+    def update_gui():
+        root.update()
+        loop.call_later(0.05, update_gui)
+
+    loop.call_soon(update_gui)
+    loop.run_forever()
 
 if __name__ == "__main__":
-    run_gui()
+    loop = asyncio.get_event_loop()
+    run_gui(loop)

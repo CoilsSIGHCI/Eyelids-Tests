@@ -3,12 +3,14 @@ from tkinter import messagebox
 import random
 import time
 import pygame
+import asyncio
 import subprocess
-import os
+import csv
+from connector import BluetoothConnector, BluetoothGUI
 
 test_setup = {
-    "types": ["Baseline", "Speech", "Audio"],
-    "repeats": 3,
+    "types": ["Baseline", "Speech", "Audio", "Eyelids"],
+    "repeats": 10,
     "directions": ["Forward", "Backward", "Left", "Right", "Stop"]
 }
 
@@ -40,8 +42,9 @@ def translate(text):
     return translations.get(text, text)
 
 class ResponseTimeTest:
-    def __init__(self, master):
+    def __init__(self, master, loop: asyncio.AbstractEventLoop):
         self.master = master
+        self.loop = loop
         self.master.title(translate("Response Time Test"))
         self.master.geometry("400x300")
 
@@ -55,16 +58,20 @@ class ResponseTimeTest:
         self.start_time = None
         self.test_count = 0
 
-        self.label = tk.Label(master, text=translate("Click 'Start Test' to begin"), font=("SimHei", 14))
+        self.label = tk.Label(master, text=translate("Click 'Connect' to begin"), font=("SimHei", 14))
         self.label.pack(pady=20)
 
-        self.start_button = tk.Button(master, text=translate("Start Test"), command=self.start_test)
+        self.connect_button = tk.Button(master, text=translate("Connect"), command=self.open_bluetooth_gui)
+        self.connect_button.pack(pady=10)
+
+        self.start_button = tk.Button(master, text=translate("Start Test"), command=self.start_test, state=tk.DISABLED)
         self.start_button.pack(pady=10)
 
         self.symbol_label = tk.Label(master, text="", font=("SimHei", 48))
         self.symbol_label.pack(pady=20)
 
         self.results = []
+        self.csv_filename = "test_result.csv"
 
         # Bind arrow keys and space
         self.master.bind("<Up>", lambda event: self.key_response("Forward"))
@@ -72,6 +79,20 @@ class ResponseTimeTest:
         self.master.bind("<Left>", lambda event: self.key_response("Left"))
         self.master.bind("<Right>", lambda event: self.key_response("Right"))
         self.master.bind("<space>", lambda event: self.key_response("Stop"))
+
+        self.bluetooth_connector = BluetoothConnector()
+
+    def open_bluetooth_gui(self):
+        bluetooth_window = tk.Toplevel(self.master)
+        bluetooth_gui = BluetoothGUI(bluetooth_window, self.loop)
+        bluetooth_window.protocol("WM_DELETE_WINDOW", lambda: self.on_bluetooth_gui_close(bluetooth_window, bluetooth_gui))
+
+    def on_bluetooth_gui_close(self, window, gui):
+        if gui.connector.connected_device:
+            self.bluetooth_connector = gui.connector
+            self.start_button.config(state=tk.NORMAL)
+            self.label.config(text="Connected to Eyelids. Click 'Start Test' to begin.")
+        window.destroy()
 
     def start_test(self):
         if self.test_count >= len(self.test_types) * self.repeats:
@@ -96,6 +117,9 @@ class ResponseTimeTest:
         elif self.current_test == "Speech":
             self.label.config(text=translate("Press arrow key when you hear the direction"))
             subprocess.Popen(["say", "-v", "Tingting", translate(self.current_direction)])
+        elif self.current_test == "Eyelids":
+            self.label.config(text=translate("Press arrow key when you see the Eyelids signal"))
+            task = self.loop.create_task(self.bluetooth_connector.eyelids_direction(self.current_direction))
 
     def show_direction_symbol(self):
         symbols = {
@@ -130,8 +154,30 @@ class ResponseTimeTest:
             result_string += f"{translate(test_type)}: {translate('Average')} {avg_time:.3f} {translate('seconds')}\n"
         messagebox.showinfo(translate("Test Complete"), result_string)
 
-        self.master.quit()
+        self.save_results_to_csv()
 
-root = tk.Tk()
-app = ResponseTimeTest(root)
-root.mainloop()
+        self.loop.create_task(self.bluetooth_connector.disconnect())
+        self.master.after(100, self.master.quit)
+
+    def save_results_to_csv(self):
+        with open(self.csv_filename, 'w', newline='') as csvfile:
+            csv_writer = csv.writer(csvfile)
+            csv_writer.writerow(['Test Type', 'Direction', 'Response Time (seconds)'])
+            for result in self.results:
+                csv_writer.writerow(result)
+        print(f"Results saved to {self.csv_filename}")
+
+def run_test(loop):
+    root = tk.Tk()
+    app = ResponseTimeTest(root, loop)
+
+    def update_gui():
+        root.update()
+        loop.call_later(0.05, update_gui)
+
+    loop.call_soon(update_gui)
+    loop.run_forever()
+
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    run_test(loop)
